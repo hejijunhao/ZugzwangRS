@@ -16,13 +16,13 @@ fn main() -> Result<()> {
     println!("Press Ctrl+C to stop.");
 
     loop {
-        // Step 1: Capture board (hardcoded bounds for MVP)
-        let board_img = capture::capture_board()
-            .context("Failed to capture board")?;
+        // Step 1: Capture full screenshot to PNG (board detection/crop in OCR)
+        capture::capture_screenshot()
+            .context("Failed to capture screenshot")?;
 
-        // Step 2: OCR to FEN (naive color-based for MVP)
-        let fen = ocr::board_to_fen(&board_img)
-            .context("Failed to recognize board")?;
+        // Step 2: OCR loads PNG, detects/crops board to FEN (naive color-based for MVP)
+        let fen = ocr::board_to_fen("screenshots/current_board.png")
+            .context("Failed to recognize board from screenshot")?;
 
         // Step 3: Engine analysis
         let (best_move, eval) = engine::analyze_position(&fen)
