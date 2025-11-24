@@ -4,9 +4,7 @@
 //! Latency goal: <30ms (just capture + save; processing in OCR).
 //! Future: Add window-specific capture, dynamic crop if perf bottleneck, or multi-monitor support.
 
-use anyhow::{bail, Context, Result};
-use image::{DynamicImage, GenericImageView};
-use std::env;
+use anyhow::{Context, Result};
 use std::fs;
 use std::time::Instant;
 use xcap::Monitor;
@@ -15,42 +13,31 @@ use xcap::Monitor;
 /// OCR module will load and handle board detection/cropping for flexibility across apps/sites.
 /// Debug: Set env var `DEBUG_CAPTURE=1` to also save full screen variant to screenshots/debug_full_screen.png.
 /// Later phases: Optional window-specific capture or dynamic cropping here if perf needed.
-/// Permissions note: On macOS, grant "Screen & System Audio Recording" permission to Terminal.app in System Settings > Privacy & Security.
+/// On macOS, grant Screen Recording permission to Terminal in System Settings > Privacy & Security.
 pub fn capture_screenshot() -> Result<()> {
     let start = Instant::now();
 
-    let monitors = Monitor::all()
-        .context("Failed to enumerate monitors")?;
-
-    let primary_monitor = monitors
-        .first()
-        .cloned()
-        .context("No monitors found")?;
-
-    let screenshot_raw = primary_monitor
+    let screenshot = Monitor::all()
+        .context("Failed to enumerate monitors")?
+        .into_iter()
+        .next()
+        .context("No monitors found")?
         .capture_image()
-        .context("Failed to capture image. On macOS, ensure Terminal has Screen Recording permission in System Settings > Privacy & Security > Screen & System Audio Recording")?;
+        .context("Failed to capture image — check Screen Recording permission")?;
 
-    let screenshot = DynamicImage::ImageRgba8(screenshot_raw);
-    if screenshot.dimensions() == (0, 0) {
-        bail!("Captured empty screenshot - possible permission issue or no display");
-    }
 
-    fs::create_dir_all("screenshots")
-        .context("Failed to create screenshots/ directory")?;
 
-    screenshot
-        .save("screenshots/current_board.png")
-        .context("Failed to save screenshot to screenshots/current_board.png")?;
+    fs::create_dir_all("screenshots").context("Failed to create screenshots dir")?;
+
+    screenshot.save("screenshots/current_board.png")
+        .context("Failed to save screenshot")?;
 
     let latency = start.elapsed();
-    eprintln!("Full screenshot capture latency: {:?}", latency); // Use eprintln to stderr for non-blocking
+    eprintln!("Capture + save latency: {:?}", latency);
 
-    // Optional: If DEBUG_CAPTURE=1, save additional info or variants
-    if env::var_os("DEBUG_CAPTURE").is_some() {
-        screenshot
-            .save("screenshots/debug_full_screen.png")
-            .context("Failed to save debug full screenshot")?;
+    // Debug: DEBUG_CAPTURE=1 → save extra copy
+    if std::env::var("DEBUG_CAPTURE").as_ref().map_or(false, |v| v.as_str() == "1") {
+        let _ = screenshot.save("screenshots/debug_full_screen.png"); // fire-and-forget
     }
 
     Ok(())
