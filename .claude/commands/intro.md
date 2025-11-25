@@ -1,0 +1,1 @@
+Take a look at CLAUDE.md, docs/alpha-blueprint.md and docs/changelog.md to get an overview of the project.

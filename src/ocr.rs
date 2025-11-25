@@ -134,7 +134,7 @@ pub fn screenshot_to_board(image_path: &str) -> Result<DynamicImage> {
 /// Loads cropped board image and performs OCR to generate FEN string.
 /// Assumes input is a clean board image (from screenshot_to_board or manual crop).
 /// MVP: Naive color/HSV per square; later templates.
-pub fn board_to_fen(image_path: &str) -> Result<String> {
+pub fn board_to_fen(image_path: &str, site: &str) -> Result<String> {
     // Detect and crop board from screenshot
     let board_img = screenshot_to_board(image_path)
         .context("Failed to detect/crop board from screenshot")?;
@@ -290,7 +290,7 @@ pub fn board_to_fen(image_path: &str) -> Result<String> {
     }
 
     // Wire it all together: split → match → build FEN
-    let templates = load_templates("chesscom")
+    let templates = load_templates(site)
         .context("Failed to load piece templates")?;
 
     let squares = split_into_squares(&img);
