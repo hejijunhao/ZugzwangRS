@@ -1,7 +1,7 @@
 mod capture;
 mod ocr;
 mod engine;
-mod config;
+// mod config;
 // mod calibrate; // Enable for calibration mode
 
 use anyhow::{Context, Result};
@@ -23,7 +23,6 @@ fn main() -> Result<()> {
                 .default_value("chesscom")
                 .value_parser(["chesscom", "lichess", "macOS"]) // Allowed values
         )
-        // TODO: Add --calibrate flag for Phase 2
         .get_matches();
 
     let site = matches.get_one::<String>("site").unwrap(); // Safe due to default

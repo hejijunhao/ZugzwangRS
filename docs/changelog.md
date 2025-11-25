@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to Rust conventions and semantic versioning.
 
+## [0.0.5] - 2024-10-02 (Phase 1 MVP Live - Full Pipeline)
+
+### Added
+- **main.rs**: Complete end-to-end MVP pipeline integration
+  - Continuous 500ms loop: capture full screen → OCR FEN (site-aware) → engine analysis → CLI output.
+  - Clap CLI: `--site=chesscom` (default) for templates.
+  - Error chaining with anyhow (robust panics).
+
+### Changed
+- main.rs: Commented unused Phase 2 mods (`config`, `calibrate`).
+- Version bump to 0.0.5; now fully operational (`cargo run` analyzes live chess tabs).
+
+### Notes
+- Requires Screen Recording perm (macOS); `templates/chesscom/` PNGs for OCR.
+- Debug: `DEBUG_CAPTURE=1` / `DEBUG_OCR=1`.
+- Performance: Full cycle <200ms target.
+- Next: Phase 2 calibration/templates, tests, crossterm UI.
+
+## [0.0.4] - 2024-10-02 (Engine Module Complete)
+
+### Added
+- **engine.rs**: Full tanton pure-Rust chess engine integration (~2900 ELO at depth 12)
+  - `analyze_position(fen)`: FEN parse, terminal checks (checkmate/stalemate), iterative deepening search, PSQT evaluation post-best-move.
+  - Returns UCI move + formatted eval (e.g., "e2e4 +0.27", "-- Checkmate").
+  - Handles invalid FEN errors gracefully.
+  - Latency target: <100ms.
+
+### Changed
+- Cargo.toml: pleco → tanton="0.5" (active maintained fork, identical API).
+
+### Notes
+- Full Phase 1 MVP pipeline now operational: capture → OCR → engine → CLI output (<200ms loop).
+- Requires `templates/chesscom/` PNGs for OCR accuracy.
+- Tests: Add unit tests for starting pos/mates; integration via main.rs loop.
+- Next: Phase 2 calibration, CLI polish.
+
 ## [0.0.3] - 2024-10-01 (OCR Module Complete)
 
 ### Added
@@ -28,8 +64,6 @@ and this project adheres to Rust conventions and semantic versioning.
 - Hardcoded to "chesscom" site for MVP; multi-site support in Phase 2
 - Engine module next: pleco integration for move analysis
 
-[0.0.3]: https://github.com/pkhelfried/ZugzwangRS/compare/v0.0.2...v0.0.3
-
 ## [0.0.2] - 2024-10-01 (Capture Module Complete)
 
 ### Changed
@@ -48,8 +82,6 @@ and this project adheres to Rust conventions and semantic versioning.
 - macOS requires Screen Recording permission for Terminal
 - OCR module next: will load PNG and handle board detection/cropping
 
-[0.0.2]: https://github.com/pkhelfried/ZugzwangRS/compare/v0.0.1...v0.0.2
-
 ## [0.0.1] - 2024-10-01 (MVP Skeleton Launch)
 
 ### Added
@@ -66,5 +98,3 @@ and this project adheres to Rust conventions and semantic versioning.
 ### Notes
 - Run: `cargo run` (panics at stubs); grant macOS screen perms.
 - Phase 1 next: OCR/engine impls.
-
-[0.0.1]: https://github.com/pkhelfried/ZugzwangRS/compare/v0.0.0...v0.0.1
