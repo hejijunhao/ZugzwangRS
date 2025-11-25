@@ -24,8 +24,7 @@ pub fn analyze_position(fen: &str) -> Result<(String, String)> {
     
     // Step 3: Run engine search (iterative deepening to fixed depth)
     const SEARCH_DEPTH: u16 = 12;
-    let mut searcher = IterativeSearcher::new();
-    let best_move = searcher.best_move(board.shallow_clone(), SEARCH_DEPTH);
+    let best_move = IterativeSearcher::best_move(board.shallow_clone(), SEARCH_DEPTH);
     
     // Step 4: Extract evaluation score (PSQT after best move; white-positive)
     let mut eval_board = board.shallow_clone();
@@ -50,5 +49,4 @@ fn format_eval(centipawns: i32) -> String {
     } else {
         format!("{:.2}", pawns)
     }
-}
 }

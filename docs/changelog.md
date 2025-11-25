@@ -12,6 +12,12 @@ and this project adheres to Rust conventions and semantic versioning.
   - Continuous 500ms loop: capture full screen → OCR FEN (site-aware) → engine analysis → CLI output.
   - Clap CLI: `--site=chesscom` (default) for templates.
   - Error chaining with anyhow (robust panics).
+- **docs/executing/cli_site_option.md**: Documentation for `--site` CLI flag implementation.
+- **docs/executing/engine_api_fix.md**: Documentation for tanton API fix.
+
+### Fixed
+- **engine.rs**: Resolved compilation error with `IterativeSearcher::best_move()` by changing from instance method to associated function (tanton v1.0 API update).
+- **ocr.rs**: Updated `board_to_fen()` to accept dynamic `site` parameter instead of hardcoded "chesscom" for multi-site template support.
 
 ### Changed
 - main.rs: Commented unused Phase 2 mods (`config`, `calibrate`).
