@@ -1,15 +1,5 @@
 Rust Chess Assistant - Refined Project Blueprint
 
-Thanks for sharing your brainstorm—it's a thoughtful, well-structured plan that aligns well with your goals of learning Rust, prioritizing performance/stealth, and keeping things minimal. I'll challenge/refine elements where it makes sense (e.g., crate choices, potential pitfalls, alternatives for purity/performance), based on current Rust ecosystem details (e.g., latest versions, maintenance status). Overall, your core decisions are solid: 100% Rust is great for learning, CLI keeps it lean, pure OCR ensures stealth, and Stockfish (or equivalent) delivers reliable strength. I've kept refinements practical—focusing on feasibility for a mini project—while addressing optimism in timelines (e.g., OCR accuracy might take longer to tune). The result is an updated blueprint/roadmap you can start coding from.
-
-Key Refinements Summary:
-- **Crate Updates**: Pulled latest versions (as of Nov 2025); swapped 'chess' for 'shakmaty' (more active/maintained for board logic). Added 'imageproc' for robust template matching (your custom OCR can leverage it).
-- **Engine Challenge**: Stockfish wrapper is fine, but for *true* 100% Rust (no external binary install), consider Pleco (Rust rewrite of Stockfish, ~3000 ELO) or Viridithas (full Rust engine, 3400+ ELO). This avoids OS-specific installs and FFI/subprocess overhead. I'll suggest Pleco as default for simplicity.
-- **OCR Refinement**: Template matching is smart; use 'imageproc' to implement SSD/NCC efficiently (faster/accurate than pure custom). Expect >95% accuracy only after tuning (e.g., handle lighting variations).
-- **Latency/Stealth**: Your estimates are achievable; add random delays as you noted. Challenge: OCR on varying themes/sites might need per-config templates.
-- **Roadmap**: Extended times slightly for realism; added testing tips. No async needed—sync loop is fine.
-- **Future**: Your enhancements are spot-on; prioritize move validation early to catch OCR errors.
-
 ### Executive Summary
 A pure-Rust CLI tool that captures your chess browser window, uses template-based OCR for board state (FEN), analyzes moves via a high-strength engine (Pleco/Stockfish), and outputs suggestions in the terminal. Stealth-focused with manual calibration; expandable to commentary via LLMs later.
 

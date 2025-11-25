@@ -10,6 +10,7 @@
 use anyhow::{Context, Result};
 use image::{DynamicImage, GenericImageView, GrayImage, imageops, ImageReader, RgbaImage};
 use imageproc::edges::canny;
+use imageproc::template_matching::{match_template, MatchTemplateMethod};
 use std::collections::HashMap;
 
 /// Detects the chessboard in the full screenshot and crops/resizes it to a standard board image.
@@ -22,7 +23,6 @@ pub fn screenshot_to_board(image_path: &str) -> Result<DynamicImage> {
         .context("Failed to decode screenshot")?;
 
     // Dynamic detection: Find board region using imageproc edges (defined locally for modularity; can extract to top-level later)
-
     fn find_board_region(img: &DynamicImage) -> Result<(u32, u32, u32, u32)> {
         // step 1: Edge detection (full screenshot)
         let gray: GrayImage = img.to_luma8();
@@ -166,64 +166,155 @@ pub fn board_to_fen(image_path: &str) -> Result<String> {
         Ok(PieceTemplates { pieces })
     }
 
-    // Load templates for the site (hardcoded to "chesscom" for MVP)
-    let _templates = load_templates("chesscom")
-        .context("Failed to load piece templates")?;
+    // Function to split board into 8x8 grid of grayscale squares for template matching
+    // Returns 8 rows (ranks 8→1 top to bottom) × 8 columns (files a→h left to right)
+    fn split_into_squares(board: &RgbaImage) -> Vec<Vec<GrayImage>> {
+        let mut squares = Vec::with_capacity(8);
 
-    // Function to split board into 8x8 grid and match each square against templates
-    fn split_into_squares(board: &RgbaImage) -> Vec<Vec<DynamicImage>> {
-        let mut squares = Vec::new();
-        
+        // Convert to grayscale once for efficiency
+        let gray_board = DynamicImage::ImageRgba8(board.clone()).to_luma8();
+
         for rank in 0..8 {
-            let mut row = Vec::new();
+            let mut row = Vec::with_capacity(8);
             for file in 0..8 {
                 let x = (file * 64) as u32;
                 let y = (rank * 64) as u32;
-                let square = imageops::crop_imm(board, x, y, 64, 64).to_image();
+                let square = imageops::crop_imm(&gray_board, x, y, 64, 64).to_image();
                 row.push(square);
             }
             squares.push(row);
         }
-
         squares
     }
 
 
-    // TODO: Build FEN string from matched pieces
-
-    fn match_square(square: &DynamicImage, templates: &PieceTemplates) -> char {
+    // matchmaking function
+    fn match_square(square: &GrayImage, templates: &PieceTemplates) -> char {
         // Returns: 'K', 'Q', 'R', etc. for pieces, or '1' for empty square
 
-        // Step 1: Convert square to grayscale for matching
-        let square_gray = square.to_luma8();
-
-        // Step 2: Check if square is empty (uniform color = no piece)
-        // Calculate variance: if pixels are all similar, variance is low = empty square
-        let pixels: Vec<f32> = square_gray.pixels().map(|p| p[0] as f32).collect();
+        // Step 1: Check if square is empty via variance analysis
+        // Low variance = uniform color = no piece present
+        let pixels: Vec<f32> = square.pixels().map(|p| p[0] as f32).collect();
         let mean = pixels.iter().sum::<f32>() / pixels.len() as f32;
         let variance = pixels.iter()
             .map(|&p| (p - mean).powi(2))
             .sum::<f32>() / pixels.len() as f32;
 
-        // If variance is very low, square is empty (just solid background color)
         const EMPTY_VARIANCE_THRESHOLD: f32 = 100.0;
         if variance < EMPTY_VARIANCE_THRESHOLD {
             return '1';
         }
 
-        // Step 3: TODO - Compare against templates and return best match
-        // Your code here!
+        // Step 2: Template matching using Sum of Squared Differences (Normalized)
+        // Lower score = better match (0.0 = perfect match)
+        let mut best_match: char = '1';
+        let mut best_score: f32 = f32::MAX;
 
-        '1' // Temporary: return empty for now
+        // Threshold: if no template scores below this, consider square empty
+        const MATCH_THRESHOLD: f32 = 0.3;
+
+        for (&piece_char, template) in &templates.pieces {
+            // Resize template to match square size (64x64) if needed
+            let template_resized = if template.dimensions() != (64, 64) {
+                imageops::resize(template, 64, 64, imageops::FilterType::Lanczos3)
+            } else {
+                template.clone()
+            };
+
+            // match_template returns a score image; for same-size images, it's 1x1
+            let result = match_template(
+                square,
+                &template_resized,
+                MatchTemplateMethod::SumOfSquaredErrorsNormalized,
+            );
+
+            // Get the match score (single pixel for same-size comparison)
+            let score = result.get_pixel(0, 0)[0];
+
+            if score < best_score {
+                best_score = score;
+                best_match = piece_char;
+            }
+        }
+
+        // Only return piece if match is confident enough
+        if best_score < MATCH_THRESHOLD {
+            best_match
+        } else {
+            '1' // No confident match = empty square
+        }
     }
 
-    // For now, return placeholder FEN (starting position)
-    // Append " w KQkq - 0 1" (assume white to move, full castling).
-    // Validate: shakmaty::fen::Fen::from_ascii(fen.as_bytes()).map_err(|_| anyhow::anyhow!("Invalid FEN"))?
-    // Suggestion (?) Perf: Use rayon for parallel square processing.
-    // Debug: Save grid squares to screenshots/ocr_debug/ for tuning.
+    // Builds FEN string from 8x8 grid of piece characters
+    // Takes matched pieces where '1' = empty, 'K'/'k' = king, etc.
+    // Returns validated FEN string with game state appended
+    fn build_fen_string(board: [[char; 8]; 8]) -> Result<String> {
+        let mut fen_parts: Vec<String> = Vec::with_capacity(8);
 
-    Ok("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string())
+        for row in &board {
+            let mut rank_str = String::new();
+            let mut empty_count = 0;
+
+            for &piece in row {
+                if piece == '1' {
+                    empty_count += 1;
+                } else {
+                    // Flush empty count before adding piece
+                    if empty_count > 0 {
+                        rank_str.push_str(&empty_count.to_string());
+                        empty_count = 0;
+                    }
+                    rank_str.push(piece);
+                }
+            }
+
+            // Flush any remaining empty squares at end of rank
+            if empty_count > 0 {
+                rank_str.push_str(&empty_count.to_string());
+            }
+
+            fen_parts.push(rank_str);
+        }
+
+        // Join ranks with '/' and append game state
+        // Note: We assume white to move, full castling rights for MVP
+        // (proper turn detection would require move history or time analysis)
+        let piece_placement = fen_parts.join("/");
+        let full_fen = format!("{} w KQkq - 0 1", piece_placement);
+
+        // Validate FEN with shakmaty
+        shakmaty::fen::Fen::from_ascii(full_fen.as_bytes())
+            .map_err(|e| anyhow::anyhow!("Invalid FEN generated: {} (FEN: {})", e, full_fen))?;
+
+        Ok(full_fen)
+    }
+
+    // Wire it all together: split → match → build FEN
+    let templates = load_templates("chesscom")
+        .context("Failed to load piece templates")?;
+
+    let squares = split_into_squares(&img);
+
+    // Debug: Save grid squares if DEBUG_OCR is set
+    if std::env::var("DEBUG_OCR").is_ok() {
+        let _ = std::fs::create_dir_all("screenshots/ocr_debug");
+        for (rank, row) in squares.iter().enumerate() {
+            for (file, square) in row.iter().enumerate() {
+                let path = format!("screenshots/ocr_debug/square_{}_{}.png", rank, file);
+                let _ = square.save(&path);
+            }
+        }
+    }
+
+    // Match each square against templates to identify pieces
+    let mut board: [[char; 8]; 8] = [['1'; 8]; 8];
+    for (rank, row) in squares.iter().enumerate() {
+        for (file, square) in row.iter().enumerate() {
+            board[rank][file] = match_square(square, &templates);
+        }
+    }
+
+    build_fen_string(board)
 }
 
 
