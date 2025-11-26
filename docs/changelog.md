@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to Rust conventions and semantic versioning.
 
+## [0.1.1] - 2025-11-26 (Cleanup & Edition Upgrade)
+
+### Changed
+- **Edition**: Upgraded to `edition = "2024"` (now stable since Rust 1.85.0, Feb 2025)
+- **Dependencies**: Removed unused deps (`crossterm`, `rayon`, `rdev`, `serde_json`)
+  - Kept as comments in Cargo.toml for future phase reference
+  - `serde` retained (used by `ocr_llm.rs` for API serialization)
+
+### Fixed
+- Assessment document (`docs/executing/assessment-25nov25.md`) updated with accurate project status
+
+### Notes
+- All 12 chesscom templates now complete: KW, QW, RW, BW, NW, PW, KB, QB, RB, BB, NB, PB
+- Build time improved with fewer dependencies
+- Project now compiles on stable Rust with Edition 2024 features available
+
+---
+
+## [0.1.0] - 2025-11-26 (LLM OCR & Async Runtime)
+
+### Added
+- **LLM OCR Mode** (`src/ocr_llm.rs`): Alternative OCR using GPT-4o Mini vision API
+  - Sends cropped board image to OpenAI for FEN extraction
+  - More accurate than template matching, especially for non-standard piece sets
+  - Requires `OPENAI_API_KEY` environment variable
+- **Native OCR Module** (`src/ocr_native.rs`): Refactored template matching into dedicated module
+- **OCR Facade** (`src/ocr.rs`): Unified interface supporting both Native and LLM modes
+- **Interactive Mode Selector**: When no `--ocr` flag provided, displays menu to choose OCR mode
+- **CLI Enhancements**:
+  - `--ocr=native|llm` flag for explicit mode selection
+  - `--interval=MS` flag for configurable loop timing (default: 1000ms)
+- **Async Runtime**: Migrated to `tokio` for non-blocking LLM API calls
+- **Dependencies**: Added `tokio`, `reqwest`, `base64`, `dialoguer` for LLM/async support
+
+### Changed
+- **main.rs**: Complete rewrite with async/await, interactive UI, configurable intervals
+- **Edition**: Fixed `edition = "2024"` → `"2021"` (2024 is nightly-only)
+- **Version**: Standardized to 0.1.0 across Cargo.toml, main.rs banners, and CLI
+
+### Fixed
+- Version inconsistency between Cargo.toml, main.rs, and changelog
+
+### Notes
+- Native mode requires `templates/{site}/` PNG files
+- LLM mode requires `OPENAI_API_KEY` set in environment
+- Both modes validated via `shakmaty` FEN parsing
+- Performance: Native <200ms, LLM ~500-1000ms (API latency)
+
+---
+
 ## [0.0.5] - 2024-10-02 (Phase 1 MVP Live - Full Pipeline)
 
 ### Added

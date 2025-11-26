@@ -29,7 +29,7 @@ pub fn analyze_position(fen: &str) -> Result<(String, String)> {
     // Step 4: Extract evaluation score (PSQT after best move; white-positive)
     let mut eval_board = board.shallow_clone();
     eval_board.apply_move(best_move);
-    let raw_eval = eval_board.psq().mg() as i32;
+    let raw_eval = eval_board.psq().mg();
 
     // Negate for side-to-move perspective (if Black to move, flip sign)
     let eval_score = if board.turn() == tanton::Player::Black { -raw_eval } else { raw_eval };

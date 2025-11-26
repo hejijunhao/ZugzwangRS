@@ -36,7 +36,7 @@ pub fn capture_screenshot() -> Result<()> {
     eprintln!("Capture + save latency: {:?}", latency);
 
     // Debug: DEBUG_CAPTURE=1 → save extra copy
-    if std::env::var("DEBUG_CAPTURE").as_ref().map_or(false, |v| v.as_str() == "1") {
+    if std::env::var("DEBUG_CAPTURE").is_ok_and(|v| v == "1") {
         let _ = screenshot.save("screenshots/debug_full_screen.png"); // fire-and-forget
     }
 
