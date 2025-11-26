@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to Rust conventions and semantic versioning.
 
+## [0.1.2] - 2025-11-26 (Interactive API Key Prompt)
+
+### Added
+- **API Key Prompt**: When LLM mode is selected without `OPENAI_API_KEY` set, the CLI now prompts for the key interactively
+  - Works for both interactive mode selector and explicit `--ocr=llm` flag
+  - Validates input (non-empty, starts with `sk-`)
+  - Sets environment variable for the session
+  - Displays helpful link to OpenAI's API key page
+
+### Changed
+- **main.rs**: Extracted `prompt_for_api_key()` helper function for reuse across entry paths
+- No longer silently falls back to Native mode when LLM is requested without key
+
+### Notes
+- Uses `unsafe { std::env::set_var() }` block required by Edition 2024 (thread-safety documentation)
+- API key is only stored in memory for the current session (not persisted to disk)
+
+---
+
 ## [0.1.1] - 2025-11-26 (Cleanup & Edition Upgrade)
 
 ### Changed
