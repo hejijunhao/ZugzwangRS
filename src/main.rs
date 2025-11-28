@@ -13,6 +13,26 @@ use ocr::OcrMode;
 use std::io::{self, BufRead};
 use std::time::Duration;
 
+/// How move analysis is performed
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AnalysisMode {
+    /// Traditional: OCR → FEN → Tanton engine (~2900 ELO)
+    #[default]
+    Engine,
+    /// Direct: LLM sees board and decides move in one shot
+    /// (Requires LLM OCR mode, provides reasoning)
+    Direct,
+}
+
+impl std::fmt::Display for AnalysisMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AnalysisMode::Engine => write!(f, "Engine (Tanton ~2900 ELO)"),
+            AnalysisMode::Direct => write!(f, "Direct (GPT-4o with reasoning)"),
+        }
+    }
+}
+
 /// Which side the user is playing - affects board orientation and turn in FEN
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PlayerSide {
@@ -97,6 +117,13 @@ async fn main() -> Result<()> {
                 .help("Which side you are playing: white (default) or black")
                 .value_parser(["white", "black"]),
         )
+        .arg(
+            Arg::new("analysis")
+                .long("analysis")
+                .value_name("MODE")
+                .help("Analysis mode: engine (Tanton) or direct (GPT-4o decides move)")
+                .value_parser(["engine", "direct"]),
+        )
         .get_matches();
 
     // Determine OCR mode
@@ -143,14 +170,40 @@ async fn main() -> Result<()> {
         select_player_side_interactive()?
     };
 
+    // Determine analysis mode
+    let analysis_mode = if let Some(mode_str) = matches.get_one::<String>("analysis") {
+        // Explicit mode from CLI
+        match mode_str.as_str() {
+            "direct" => {
+                // Direct mode requires LLM - ensure API key is available
+                if !ocr::llm_available() {
+                    prompt_for_api_key()?;
+                }
+                AnalysisMode::Direct
+            }
+            _ => AnalysisMode::Engine,
+        }
+    } else {
+        // No CLI flag - show interactive selector (only if LLM mode was selected)
+        if ocr_mode == OcrMode::Llm {
+            select_analysis_mode_interactive()?
+        } else {
+            // Native OCR can only use engine analysis
+            AnalysisMode::Engine
+        }
+    };
+
     // Startup banner
     println!();
     println!("╔═══════════════════════════════════════════════════════════╗");
-    println!("║         Zugzwang-RS Chess Assistant v0.1.1                ║");
+    println!("║         Zugzwang-RS Chess Assistant v0.1.5                ║");
     println!("╚═══════════════════════════════════════════════════════════╝");
     println!();
     println!("  Playing:   {}", player_side);
-    println!("  OCR Mode:  {}", ocr_mode);
+    println!("  Analysis:  {}", analysis_mode);
+    if analysis_mode == AnalysisMode::Engine {
+        println!("  OCR Mode:  {}", ocr_mode);
+    }
     let trigger_display = if manual_mode {
         "manual (press Enter)".to_string()
     } else {
@@ -200,33 +253,55 @@ async fn main() -> Result<()> {
             println!("│ [1] Capture:  {:>6.1}ms", step_start.elapsed().as_secs_f64() * 1000.0);
         }
 
-        // Step 2: OCR to FEN (async)
-        let step_start = std::time::Instant::now();
-        let fen = ocr::board_to_fen("screenshots/current_board.jpg", site, ocr_mode, player_side)
-            .await
-            .context("Failed to recognize board from screenshot")?;
-        if verbose {
-            println!("│ [2] OCR:      {:>6.1}ms", step_start.elapsed().as_secs_f64() * 1000.0);
-        }
+        // Branch based on analysis mode
+        match analysis_mode {
+            AnalysisMode::Direct => {
+                // Direct LLM analysis: LLM sees board and decides move
+                let step_start = std::time::Instant::now();
+                let recommendation = ocr_llm::analyze_board("screenshots/current_board.jpg", player_side)
+                    .await
+                    .context("Failed to analyze board with LLM")?;
+                if verbose {
+                    println!("│ [2] LLM:      {:>6.1}ms", step_start.elapsed().as_secs_f64() * 1000.0);
+                    println!("│ [3] Total:    {:>6.1}ms", cycle_start.elapsed().as_secs_f64() * 1000.0);
+                    println!("├─────────────────────────────────────────────────────────────");
+                    println!("│ Move: {}", recommendation.best_move);
+                    println!("│ Eval: {}", recommendation.evaluation);
+                    println!("│ Why:  {}", recommendation.reasoning);
+                    println!("└─────────────────────────────────────────────────────────────");
+                } else {
+                    println!("Move: {}", recommendation.best_move);
+                    println!("Eval: {}", recommendation.evaluation);
+                    println!("Why:  {}", recommendation.reasoning);
+                }
+            }
+            AnalysisMode::Engine => {
+                // Traditional pipeline: OCR → FEN → Engine
+                // Step 2: OCR to FEN (async)
+                let step_start = std::time::Instant::now();
+                let fen = ocr::board_to_fen("screenshots/current_board.jpg", site, ocr_mode, player_side)
+                    .await
+                    .context("Failed to recognize board from screenshot")?;
+                if verbose {
+                    println!("│ [2] OCR:      {:>6.1}ms", step_start.elapsed().as_secs_f64() * 1000.0);
+                }
 
-        // Step 3: Engine analysis
-        let step_start = std::time::Instant::now();
-        let (best_move, eval) =
-            engine::analyze_position(&fen).context("Failed to analyze position")?;
-        if verbose {
-            println!("│ [3] Engine:   {:>6.1}ms", step_start.elapsed().as_secs_f64() * 1000.0);
-            println!("│ [4] Total:    {:>6.1}ms", cycle_start.elapsed().as_secs_f64() * 1000.0);
-            println!("├─────────────────────────────────────────────────────────────");
-        }
-
-        // Step 4: Output
-        if verbose {
-            println!("│ FEN:  {}", fen);
-            println!("│ Best: {} ({})", best_move, eval);
-            println!("└─────────────────────────────────────────────────────────────");
-        } else {
-            println!("FEN:  {}", fen);
-            println!("Best: {} ({})", best_move, eval);
+                // Step 3: Engine analysis
+                let step_start = std::time::Instant::now();
+                let (best_move, eval) =
+                    engine::analyze_position(&fen).context("Failed to analyze position")?;
+                if verbose {
+                    println!("│ [3] Engine:   {:>6.1}ms", step_start.elapsed().as_secs_f64() * 1000.0);
+                    println!("│ [4] Total:    {:>6.1}ms", cycle_start.elapsed().as_secs_f64() * 1000.0);
+                    println!("├─────────────────────────────────────────────────────────────");
+                    println!("│ FEN:  {}", fen);
+                    println!("│ Best: {} ({})", best_move, eval);
+                    println!("└─────────────────────────────────────────────────────────────");
+                } else {
+                    println!("FEN:  {}", fen);
+                    println!("Best: {} ({})", best_move, eval);
+                }
+            }
         }
         println!();
 
@@ -352,9 +427,45 @@ fn select_player_side_interactive() -> Result<PlayerSide> {
     })
 }
 
+/// Interactive CLI selector for analysis mode
+/// Only shown when LLM mode is selected (Direct requires LLM)
+fn select_analysis_mode_interactive() -> Result<AnalysisMode> {
+    let options = vec![
+        "Engine (Tanton ~2900 ELO) - strongest play, no explanation",
+        "Direct (GPT-4o) - explains reasoning, slightly weaker",
+    ];
+
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("How should moves be analyzed?")
+        .items(&options)
+        .default(0) // Engine is default
+        .interact()
+        .context("Failed to get user selection")?;
+
+    Ok(match selection {
+        1 => AnalysisMode::Direct,
+        _ => AnalysisMode::Engine,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ===== AnalysisMode Tests =====
+
+    #[test]
+    fn test_analysis_mode_default() {
+        assert_eq!(AnalysisMode::default(), AnalysisMode::Engine);
+    }
+
+    #[test]
+    fn test_analysis_mode_display() {
+        assert!(format!("{}", AnalysisMode::Engine).contains("Engine"));
+        assert!(format!("{}", AnalysisMode::Direct).contains("GPT-4o"));
+    }
+
+    // ===== PlayerSide Tests =====
 
     #[test]
     fn test_player_side_fen_turn_white() {

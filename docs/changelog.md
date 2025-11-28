@@ -5,6 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to Rust conventions and semantic versioning.
 
+## [0.1.5] - 2025-11-28 (Direct LLM Analysis Mode)
+
+### Added
+- **Direct Analysis Mode** (`--analysis=engine|direct`): New way to get move recommendations
+  - `engine` (default): Traditional pipeline — OCR → FEN → Tanton engine (~2900 ELO)
+  - `direct`: GPT-4o sees the board and decides the best move in one shot
+  - Direct mode provides move explanations ("Why: Controls the center...")
+  - Interactive selector shown when LLM OCR mode is selected without `--analysis` flag
+- **`AnalysisMode` enum**: New type to represent analysis strategy
+- **`analyze_board()` function** (`src/ocr_llm.rs`): Direct board-to-move API
+  - Returns `MoveRecommendation` struct with `best_move`, `evaluation`, and `reasoning`
+  - Uses structured prompt format (`MOVE:/EVAL:/WHY:`) for reliable parsing
+- **New unit tests**: Coverage for move prompt building and response parsing
+
+### Changed
+- **Startup banner**: Now shows "Analysis: Engine (Tanton ~2900 ELO)" or "Analysis: Direct (GPT-4o with reasoning)"
+- **OCR Mode display**: Only shown when using Engine analysis (Direct mode implies LLM)
+- **`ocr_llm.rs` refactored**: Renamed internal functions for clarity
+  - `build_prompt()` → `build_fen_prompt()` (FEN OCR)
+  - `build_request()` → `build_fen_request()` (FEN OCR)
+  - New `build_move_prompt()` and `build_move_request()` for direct analysis
+
+### Output Format
+**Engine mode** (unchanged):
+```
+FEN:  rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1
+Best: E7 to E5 (+0.12)
+```
+
+**Direct mode** (new):
+```
+Move: E2 to E4
+Eval: equal
+Why:  Controls the center and opens lines for the bishop and queen.
+```
+
+### CLI Changes
+```bash
+# Explicit analysis mode
+cargo run -- --analysis=direct              # GPT-4o decides move directly
+cargo run -- --analysis=engine              # Traditional OCR → Engine pipeline
+
+# Combined with other flags
+cargo run -- --analysis=direct --side=black --trigger=manual
+
+# Interactive (prompts when LLM mode selected)
+cargo run -- --ocr=llm                      # Will ask: Engine or Direct?
+```
+
+### Trade-offs
+| Aspect | Engine Mode | Direct Mode |
+|--------|-------------|-------------|
+| Strength | ~2900 ELO (Tanton) | ~1800-2000 ELO (GPT-4o) |
+| Explanation | None | Reasoning provided |
+| Offline | Yes (with Native OCR) | No |
+| Best for | Competitive play | Learning/understanding |
+
+### Notes
+- Direct mode automatically enables LLM (prompts for API key if not set)
+- Native OCR users always use Engine mode (Direct requires vision API)
+- Direct mode makes a single API call (vs OCR + Engine in traditional mode)
+
+---
+
 ## [0.1.4] - 2025-11-28 (GPT-4o Upgrade & Player Side Selection)
 
 ### Added

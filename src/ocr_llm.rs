@@ -1,6 +1,12 @@
-//! LLM-based OCR using OpenAI GPT-4o
-//! Sends board screenshot to vision API, receives FEN string directly.
-//! No templates needed - works with any chess site or piece style.
+//! LLM-based chess analysis using OpenAI GPT-4o
+//!
+//! Two modes of operation:
+//! 1. OCR Mode: Sends board screenshot to vision API, receives FEN string
+//! 2. Direct Analysis Mode: LLM sees the board and decides the best move directly
+//!
+//! Direct analysis bypasses the FEN→Engine pipeline, leveraging GPT-4o's
+//! chess knowledge to recommend moves in a single API call.
+//!
 //! Latency: 500-2000ms (network dependent)
 //! Requires OPENAI_API_KEY environment variable.
 
@@ -63,11 +69,49 @@ struct ResponseMessage {
 }
 
 
+/// Result of direct LLM chess analysis
+#[derive(Debug, Clone)]
+pub struct MoveRecommendation {
+    /// The recommended move in readable format (e.g., "E2 to E4", "Knight to F3")
+    pub best_move: String,
+    /// Brief explanation of why this move is good
+    pub reasoning: String,
+    /// Position evaluation (e.g., "slight advantage", "winning", "equal")
+    pub evaluation: String,
+}
+
 // *************** Public API ***************
 
 /// Checks if the OpenAI API key is available
 pub fn has_api_key() -> bool {
     std::env::var("OPENAI_API_KEY").is_ok()
+}
+
+/// Analyzes a chess board image and returns a move recommendation directly.
+///
+/// This bypasses the traditional OCR→FEN→Engine pipeline by having GPT-4o
+/// look at the board and decide the best move in one shot.
+///
+/// The `player_side` parameter tells the LLM which color you're playing as,
+/// so it knows which pieces to move and how the board is oriented.
+pub async fn analyze_board(image_path: &str, player_side: PlayerSide) -> Result<MoveRecommendation> {
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .context("OPENAI_API_KEY environment variable not set")?;
+
+    // Read and encode image
+    let image_data =
+        std::fs::read(image_path).with_context(|| format!("Failed to read image: {}", image_path))?;
+    let base64_image = general_purpose::STANDARD.encode(&image_data);
+
+    // Build request with move analysis prompt
+    let prompt = build_move_prompt(player_side);
+    let request = build_move_request(&base64_image, &prompt);
+
+    // Call API with retry
+    let response = call_api_with_retry(&api_key, &request).await?;
+
+    // Parse the structured response
+    parse_move_response(&response)
 }
 
 /// Analyzes a chess board image and returns FEN notation using GPT-4o.
@@ -89,8 +133,8 @@ pub async fn board_to_fen(image_path: &str, player_side: PlayerSide) -> Result<S
     let base64_image = general_purpose::STANDARD.encode(&image_data);
 
     // Build request with side-aware prompt
-    let prompt = build_prompt(player_side);
-    let request = build_request(&base64_image, &prompt);
+    let prompt = build_fen_prompt(player_side);
+    let request = build_fen_request(&base64_image, &prompt);
 
     // Retry loop for validation failures (LLM sometimes returns invalid positions)
     let mut last_validation_error = None;
@@ -130,10 +174,91 @@ pub async fn board_to_fen(image_path: &str, player_side: PlayerSide) -> Result<S
 
 // *************** Internal Functions ***************
 
-/// Builds the prompt for GPT-4o based on which side the player is playing.
+/// Builds the prompt for direct move analysis.
+/// The LLM will analyze the position and recommend the best move.
+fn build_move_prompt(player_side: PlayerSide) -> String {
+    let (color, piece_position) = match player_side {
+        PlayerSide::White => ("White", "Your pieces (White) are at the bottom of the image"),
+        PlayerSide::Black => ("Black", "Your pieces (Black) are at the bottom of the image"),
+    };
+
+    format!(r#"You are a chess grandmaster analyzing this board position. You are playing as {color}.
+
+{piece_position}.
+
+Analyze the position and recommend the best move. Consider:
+- Tactical opportunities (captures, checks, threats)
+- Positional factors (piece activity, pawn structure, king safety)
+- Strategic plans
+
+Respond in EXACTLY this format (3 lines, no extra text):
+MOVE: [your move in format like "E2 to E4" or "Knight F3 to G5" or "Castle kingside"]
+EVAL: [one of: winning, clear advantage, slight advantage, equal, slight disadvantage, clear disadvantage, losing]
+WHY: [one brief sentence explaining the move]
+
+Example response:
+MOVE: E2 to E4
+EVAL: equal
+WHY: Controls the center and opens lines for the bishop and queen."#,
+        color = color,
+        piece_position = piece_position
+    )
+}
+
+/// Builds the API request for move analysis (needs more tokens for reasoning)
+fn build_move_request(base64_image: &str, prompt: &str) -> ChatRequest {
+    ChatRequest {
+        model: MODEL.to_string(),
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: vec![
+                ContentPart::Text {
+                    text: prompt.to_string(),
+                },
+                ContentPart::ImageUrl {
+                    image_url: ImageUrlDetail {
+                        url: format!("data:image/jpeg;base64,{}", base64_image),
+                        detail: "high".to_string(),
+                    },
+                },
+            ],
+        }],
+        max_tokens: 200, // More tokens needed for move + reasoning
+    }
+}
+
+/// Parses the structured move response from GPT-4o
+fn parse_move_response(response: &str) -> Result<MoveRecommendation> {
+    let mut best_move = None;
+    let mut evaluation = None;
+    let mut reasoning = None;
+
+    for line in response.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("MOVE:") {
+            best_move = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("EVAL:") {
+            evaluation = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("WHY:") {
+            reasoning = Some(rest.trim().to_string());
+        }
+    }
+
+    let best_move = best_move.ok_or_else(|| anyhow::anyhow!(
+        "LLM response missing MOVE line. Response was: {}", response
+    ))?;
+
+    Ok(MoveRecommendation {
+        best_move,
+        evaluation: evaluation.unwrap_or_else(|| "unknown".to_string()),
+        reasoning: reasoning.unwrap_or_else(|| "No explanation provided".to_string()),
+    })
+}
+
+/// Builds the prompt for FEN OCR based on which side the player is playing.
 /// - When playing as White: White pieces are at the bottom, turn indicator is 'w'
 /// - When playing as Black: Black pieces are at the bottom, turn indicator is 'b'
-fn build_prompt(player_side: PlayerSide) -> String {
+fn build_fen_prompt(player_side: PlayerSide) -> String {
     let (piece_position, turn_char) = match player_side {
         PlayerSide::White => ("White pieces are at the bottom of the image", 'w'),
         PlayerSide::Black => ("Black pieces are at the bottom of the image", 'b'),
@@ -156,7 +281,7 @@ rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR {turn_char} KQkq - 0 1"#,
     )
 }
 
-fn build_request(base64_image: &str, prompt: &str) -> ChatRequest {
+fn build_fen_request(base64_image: &str, prompt: &str) -> ChatRequest {
     ChatRequest {
         model: MODEL.to_string(),
         messages: vec![ChatMessage {
@@ -345,20 +470,78 @@ fn fix_castling_rights(fen: &str) -> String {
 mod tests {
     use super::*;
 
+    // ===== FEN OCR Prompt Tests =====
+
     #[test]
-    fn test_build_prompt_for_white() {
-        let prompt = build_prompt(PlayerSide::White);
+    fn test_build_fen_prompt_for_white() {
+        let prompt = build_fen_prompt(PlayerSide::White);
         assert!(prompt.contains("FEN"));
         assert!(prompt.contains("White pieces are at the bottom"));
         assert!(prompt.contains("w KQkq"));
     }
 
     #[test]
-    fn test_build_prompt_for_black() {
-        let prompt = build_prompt(PlayerSide::Black);
+    fn test_build_fen_prompt_for_black() {
+        let prompt = build_fen_prompt(PlayerSide::Black);
         assert!(prompt.contains("FEN"));
         assert!(prompt.contains("Black pieces are at the bottom"));
         assert!(prompt.contains("b KQkq"));
+    }
+
+    // ===== Direct Move Analysis Prompt Tests =====
+
+    #[test]
+    fn test_build_move_prompt_for_white() {
+        let prompt = build_move_prompt(PlayerSide::White);
+        assert!(prompt.contains("playing as White"));
+        assert!(prompt.contains("Your pieces (White) are at the bottom"));
+        assert!(prompt.contains("MOVE:"));
+        assert!(prompt.contains("EVAL:"));
+        assert!(prompt.contains("WHY:"));
+    }
+
+    #[test]
+    fn test_build_move_prompt_for_black() {
+        let prompt = build_move_prompt(PlayerSide::Black);
+        assert!(prompt.contains("playing as Black"));
+        assert!(prompt.contains("Your pieces (Black) are at the bottom"));
+    }
+
+    // ===== Move Response Parsing Tests =====
+
+    #[test]
+    fn test_parse_move_response_valid() {
+        let response = "MOVE: E2 to E4\nEVAL: equal\nWHY: Controls the center.";
+        let result = parse_move_response(response).unwrap();
+        assert_eq!(result.best_move, "E2 to E4");
+        assert_eq!(result.evaluation, "equal");
+        assert_eq!(result.reasoning, "Controls the center.");
+    }
+
+    #[test]
+    fn test_parse_move_response_with_extra_whitespace() {
+        let response = "  MOVE:   Knight F3 to G5  \n  EVAL:  slight advantage \n WHY:  Forks the queen and rook.  ";
+        let result = parse_move_response(response).unwrap();
+        assert_eq!(result.best_move, "Knight F3 to G5");
+        assert_eq!(result.evaluation, "slight advantage");
+        assert_eq!(result.reasoning, "Forks the queen and rook.");
+    }
+
+    #[test]
+    fn test_parse_move_response_missing_optional_fields() {
+        let response = "MOVE: Castle kingside";
+        let result = parse_move_response(response).unwrap();
+        assert_eq!(result.best_move, "Castle kingside");
+        assert_eq!(result.evaluation, "unknown");
+        assert_eq!(result.reasoning, "No explanation provided");
+    }
+
+    #[test]
+    fn test_parse_move_response_missing_move_fails() {
+        let response = "EVAL: winning\nWHY: Because reasons.";
+        let result = parse_move_response(response);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing MOVE"));
     }
 
     #[test]
@@ -446,21 +629,45 @@ mod tests {
         let _ = has_api_key();
     }
 
+    // ===== Integration Tests (require API key) =====
+
     #[tokio::test]
     #[ignore = "requires OPENAI_API_KEY"]
-    async fn test_real_api_call_as_white() {
-        // Run with: OPENAI_API_KEY=sk-... cargo test test_real_api_call_as_white -- --ignored
-        let result = board_to_fen("screenshots/current_board.png", PlayerSide::White).await;
-        println!("Result: {:?}", result);
+    async fn test_real_fen_ocr_as_white() {
+        // Run with: OPENAI_API_KEY=sk-... cargo test test_real_fen_ocr_as_white -- --ignored
+        let result = board_to_fen("screenshots/current_board.jpg", PlayerSide::White).await;
+        println!("FEN Result: {:?}", result);
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     #[ignore = "requires OPENAI_API_KEY"]
-    async fn test_real_api_call_as_black() {
-        // Run with: OPENAI_API_KEY=sk-... cargo test test_real_api_call_as_black -- --ignored
-        let result = board_to_fen("screenshots/current_board.png", PlayerSide::Black).await;
-        println!("Result: {:?}", result);
+    async fn test_real_fen_ocr_as_black() {
+        // Run with: OPENAI_API_KEY=sk-... cargo test test_real_fen_ocr_as_black -- --ignored
+        let result = board_to_fen("screenshots/current_board.jpg", PlayerSide::Black).await;
+        println!("FEN Result: {:?}", result);
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires OPENAI_API_KEY"]
+    async fn test_real_analyze_board_as_white() {
+        // Run with: OPENAI_API_KEY=sk-... cargo test test_real_analyze_board_as_white -- --ignored
+        let result = analyze_board("screenshots/current_board.jpg", PlayerSide::White).await;
+        println!("Move recommendation: {:?}", result);
+        assert!(result.is_ok());
+        let rec = result.unwrap();
+        assert!(!rec.best_move.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires OPENAI_API_KEY"]
+    async fn test_real_analyze_board_as_black() {
+        // Run with: OPENAI_API_KEY=sk-... cargo test test_real_analyze_board_as_black -- --ignored
+        let result = analyze_board("screenshots/current_board.jpg", PlayerSide::Black).await;
+        println!("Move recommendation: {:?}", result);
+        assert!(result.is_ok());
+        let rec = result.unwrap();
+        assert!(!rec.best_move.is_empty());
     }
 }
