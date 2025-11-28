@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use clap::{Arg, Command};
 use dialoguer::{theme::ColorfulTheme, Input, Select};
 use ocr::OcrMode;
+use std::io::{self, BufRead};
 use std::time::Duration;
 
 #[tokio::main]
@@ -49,6 +50,13 @@ async fn main() -> Result<()> {
                 .help("Enable verbose logging for debugging")
                 .action(clap::ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("trigger")
+                .long("trigger")
+                .value_name("MODE")
+                .help("Capture trigger: auto (interval-based) or manual (press Enter)")
+                .value_parser(["auto", "manual"]),
+        )
         .get_matches();
 
     // Determine OCR mode
@@ -74,6 +82,15 @@ async fn main() -> Result<()> {
     let site = matches.get_one::<String>("site").unwrap();
     let verbose = matches.get_flag("verbose");
 
+    // Determine trigger mode
+    let manual_mode = if let Some(trigger) = matches.get_one::<String>("trigger") {
+        // Explicit mode from CLI
+        trigger == "manual"
+    } else {
+        // No CLI flag - show interactive selector
+        select_trigger_mode_interactive()?
+    };
+
     // Startup banner
     println!();
     println!("╔═══════════════════════════════════════════════════════════╗");
@@ -81,7 +98,12 @@ async fn main() -> Result<()> {
     println!("╚═══════════════════════════════════════════════════════════╝");
     println!();
     println!("  OCR Mode:  {}", ocr_mode);
-    println!("  Interval:  {}ms", interval);
+    let trigger_display = if manual_mode {
+        "manual (press Enter)".to_string()
+    } else {
+        format!("auto ({}ms)", interval)
+    };
+    println!("  Trigger:   {}", trigger_display);
     if ocr_mode == OcrMode::Native {
         println!("  Site:      {}", site);
     }
@@ -89,14 +111,28 @@ async fn main() -> Result<()> {
         println!("  Verbose:   enabled");
     }
     println!();
-    println!("  Press Ctrl+C to stop.");
+    if manual_mode {
+        println!("  Press Enter to capture & analyze, Ctrl+C to stop.");
+    } else {
+        println!("  Press Ctrl+C to stop.");
+    }
     println!();
     println!("─────────────────────────────────────────────────────────────");
     println!();
 
     // Main pipeline loop
     let mut cycle_count = 0u64;
+    let stdin = io::stdin();
+
     loop {
+        // In manual mode, wait for user to press Enter before capturing
+        if manual_mode {
+            print!("▶ Press Enter to capture & analyze... ");
+            io::Write::flush(&mut io::stdout())?;
+            let mut line = String::new();
+            stdin.lock().read_line(&mut line)?;
+        }
+
         cycle_count += 1;
         let cycle_start = std::time::Instant::now();
 
@@ -113,7 +149,7 @@ async fn main() -> Result<()> {
 
         // Step 2: OCR to FEN (async)
         let step_start = std::time::Instant::now();
-        let fen = ocr::board_to_fen("screenshots/current_board.png", site, ocr_mode)
+        let fen = ocr::board_to_fen("screenshots/current_board.jpg", site, ocr_mode)
             .await
             .context("Failed to recognize board from screenshot")?;
         if verbose {
@@ -141,8 +177,10 @@ async fn main() -> Result<()> {
         }
         println!();
 
-        // Wait before next cycle
-        tokio::time::sleep(Duration::from_millis(interval)).await;
+        // Wait before next cycle (only in auto mode)
+        if !manual_mode {
+            tokio::time::sleep(Duration::from_millis(interval)).await;
+        }
     }
 }
 
@@ -221,4 +259,22 @@ fn select_ocr_mode_interactive() -> Result<OcrMode> {
     };
 
     Ok(mode)
+}
+
+/// Interactive CLI selector for trigger mode
+/// Returns true for manual mode, false for auto mode
+fn select_trigger_mode_interactive() -> Result<bool> {
+    let options = vec![
+        "Auto (continuous) - captures at regular intervals",
+        "Manual (on-demand) - press Enter to capture",
+    ];
+
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select capture trigger")
+        .items(&options)
+        .default(0) // Auto is default
+        .interact()
+        .context("Failed to get user selection")?;
+
+    Ok(selection == 1) // 1 = Manual
 }

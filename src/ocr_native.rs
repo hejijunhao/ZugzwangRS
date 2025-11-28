@@ -31,14 +31,19 @@ pub fn screenshot_to_board(image_path: &str) -> Result<DynamicImage> {
         let (width, height) = img.dimensions();
         let candidates = generate_candidate_regions(width, height);
 
-        // Step 3: Score each candidate by edge density
+        // Step 3: Score each candidate by edge density × size factor
+        // We multiply by size to prefer larger boards (avoids selecting partial boards)
         let mut best_candidate: Option<(u32, u32, u32, u32)> = None;
+        let mut best_score = 0.0f32;
         let mut best_density = 0.0f32;
 
         for (x, y, size) in candidates {
             let density = calculate_edge_density(&edges, x, y, size);
+            // Score = density × size, so larger boards with decent density win
+            let score = density * size as f32;
 
-            if density > best_density {
+            if score > best_score {
+                best_score = score;
                 best_density = density;
                 best_candidate = Some((x, y, size, size));
             }
@@ -65,9 +70,10 @@ pub fn screenshot_to_board(image_path: &str) -> Result<DynamicImage> {
         let mut candidates = Vec::new();
 
         // Calculate reasonable board sizes to search for
-        let min_size = 200u32;
+        // Minimum 300px to avoid selecting partial boards on downsampled images
+        let min_size = 300u32;
         let max_size = if width < height { width } else { height };
-        let size_step = 100u32; // Try every 100 pixels
+        let size_step = 50u32; // Finer granularity for better detection
 
         // Grid search: Try different positions and sizes
         for size in (min_size..=max_size).step_by(size_step as usize) {
@@ -111,6 +117,14 @@ pub fn screenshot_to_board(image_path: &str) -> Result<DynamicImage> {
         .context("Failed to detect board region in screenshot")?;
 
     let (crop_x, crop_y, crop_w, crop_h) = bounds;
+
+    // Debug: log detected board dimensions
+    if std::env::var("DEBUG_OCR").is_ok() {
+        eprintln!(
+            "Board detected: {}×{} at ({}, {})",
+            crop_w, crop_h, crop_x, crop_y
+        );
+    }
 
     let cropped = img.crop_imm(crop_x, crop_y, crop_w, crop_h);
 
@@ -299,13 +313,46 @@ fn build_fen_string(board: [[char; 8]; 8]) -> Result<String> {
     Ok(full_fen)
 }
 
-/// Main entry point: Loads screenshot and performs OCR to generate FEN string.
+/// Loads screenshot and performs OCR to generate FEN string (full pipeline).
 /// Uses template matching against site-specific piece images.
+/// Note: The OCR facade typically calls cropped_board_to_fen directly after
+/// shared board detection. This function is kept for direct usage/testing.
+#[allow(dead_code)]
 pub fn board_to_fen(image_path: &str, site: &str) -> Result<String> {
     // Detect and crop board from screenshot
     let board_img = screenshot_to_board(image_path)
         .context("Failed to detect/crop board from screenshot")?;
 
+    // Delegate to the cropped board processor
+    process_board_image(board_img, site)
+}
+
+/// Processes a pre-cropped board image to generate FEN string.
+/// Called by the OCR facade after shared board detection.
+/// Expects a 512x512 board image (or will resize to that).
+pub fn cropped_board_to_fen(image_path: &str, site: &str) -> Result<String> {
+    use image::ImageReader;
+
+    let img = ImageReader::open(image_path)
+        .context("Failed to open cropped board image")?
+        .decode()
+        .context("Failed to decode cropped board image")?;
+
+    // Ensure it's 512x512 for consistent square sizes
+    let (w, h) = img.dimensions();
+    let board_img = if w != 512 || h != 512 {
+        let resized = imageops::resize(&img, 512, 512, imageops::FilterType::Lanczos3);
+        DynamicImage::ImageRgba8(resized)
+    } else {
+        img
+    };
+
+    process_board_image(board_img, site)
+}
+
+/// Internal: processes a board image (already cropped/resized) to FEN.
+/// Shared by both board_to_fen and cropped_board_to_fen.
+fn process_board_image(board_img: DynamicImage, site: &str) -> Result<String> {
     // Convert to RGBA for processing
     let img = board_img.to_rgba8();
 

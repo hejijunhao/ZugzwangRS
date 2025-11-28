@@ -70,8 +70,6 @@ pub fn has_api_key() -> bool {
 
 /// Analyzes a chess board image and returns FEN notation using GPT-4o Mini.
 pub async fn board_to_fen(image_path: &str) -> Result<String> {
-    let start = std::time::Instant::now();
-
     let api_key = std::env::var("OPENAI_API_KEY")
         .context("OPENAI_API_KEY environment variable not set")?;
 
@@ -87,11 +85,11 @@ pub async fn board_to_fen(image_path: &str) -> Result<String> {
     // Call API with retry
     let fen = call_api_with_retry(&api_key, &request).await?;
 
+    // Always show raw LLM response for debugging
+    eprintln!("LLM returned: {}", fen);
+
     // Validate FEN
     validate_fen(&fen)?;
-
-    let latency = start.elapsed();
-    eprintln!("LLM OCR latency: {:?}", latency);
 
     Ok(fen)
 }
@@ -196,8 +194,23 @@ async fn call_api(client: &Client, api_key: &str, request: &ChatRequest) -> Resu
 }
 
 fn validate_fen(fen: &str) -> Result<()> {
+    // Step 1: Basic syntax validation
     shakmaty::fen::Fen::from_ascii(fen.as_bytes())
-        .map_err(|e| anyhow::anyhow!("Invalid FEN from LLM: {} (received: '{}')", e, fen))?;
+        .map_err(|e| anyhow::anyhow!("Invalid FEN syntax from LLM: {} (received: '{}')", e, fen))?;
+
+    // Step 2: Validate king count (exactly 1 white king 'K' and 1 black king 'k')
+    // This prevents Tanton engine panics on illegal positions
+    let board_part = fen.split_whitespace().next().unwrap_or("");
+    let white_kings = board_part.chars().filter(|&c| c == 'K').count();
+    let black_kings = board_part.chars().filter(|&c| c == 'k').count();
+
+    if white_kings != 1 || black_kings != 1 {
+        anyhow::bail!(
+            "Invalid FEN from LLM: expected exactly 1 king per side, got {} white kings and {} black kings (received: '{}')",
+            white_kings, black_kings, fen
+        );
+    }
+
     Ok(())
 }
 
