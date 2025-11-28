@@ -13,6 +13,39 @@ use ocr::OcrMode;
 use std::io::{self, BufRead};
 use std::time::Duration;
 
+/// Which side the user is playing - affects board orientation and turn in FEN
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlayerSide {
+    #[default]
+    White,
+    Black,
+}
+
+impl PlayerSide {
+    /// Returns the FEN turn character for when it's this player's turn
+    pub fn fen_turn(&self) -> char {
+        match self {
+            PlayerSide::White => 'w',
+            PlayerSide::Black => 'b',
+        }
+    }
+
+    /// Returns true if board image needs vertical flip for correct FEN
+    /// (When playing as Black, the board is shown with Black at bottom)
+    pub fn needs_board_flip(&self) -> bool {
+        matches!(self, PlayerSide::Black)
+    }
+}
+
+impl std::fmt::Display for PlayerSide {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlayerSide::White => write!(f, "White"),
+            PlayerSide::Black => write!(f, "Black"),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI arguments
@@ -57,6 +90,13 @@ async fn main() -> Result<()> {
                 .help("Capture trigger: auto (interval-based) or manual (press Enter)")
                 .value_parser(["auto", "manual"]),
         )
+        .arg(
+            Arg::new("side")
+                .long("side")
+                .value_name("SIDE")
+                .help("Which side you are playing: white (default) or black")
+                .value_parser(["white", "black"]),
+        )
         .get_matches();
 
     // Determine OCR mode
@@ -91,12 +131,25 @@ async fn main() -> Result<()> {
         select_trigger_mode_interactive()?
     };
 
+    // Determine player side
+    let player_side = if let Some(side_str) = matches.get_one::<String>("side") {
+        // Explicit side from CLI
+        match side_str.as_str() {
+            "black" => PlayerSide::Black,
+            _ => PlayerSide::White,
+        }
+    } else {
+        // No CLI flag - show interactive selector
+        select_player_side_interactive()?
+    };
+
     // Startup banner
     println!();
     println!("╔═══════════════════════════════════════════════════════════╗");
     println!("║         Zugzwang-RS Chess Assistant v0.1.1                ║");
     println!("╚═══════════════════════════════════════════════════════════╝");
     println!();
+    println!("  Playing:   {}", player_side);
     println!("  OCR Mode:  {}", ocr_mode);
     let trigger_display = if manual_mode {
         "manual (press Enter)".to_string()
@@ -149,7 +202,7 @@ async fn main() -> Result<()> {
 
         // Step 2: OCR to FEN (async)
         let step_start = std::time::Instant::now();
-        let fen = ocr::board_to_fen("screenshots/current_board.jpg", site, ocr_mode)
+        let fen = ocr::board_to_fen("screenshots/current_board.jpg", site, ocr_mode, player_side)
             .await
             .context("Failed to recognize board from screenshot")?;
         if verbose {
@@ -225,12 +278,12 @@ fn select_ocr_mode_interactive() -> Result<OcrMode> {
     let options = if llm_available {
         vec![
             "Native (template matching) - fast, requires templates/",
-            "LLM (GPT-4o Mini) - accurate, requires API key",
+            "LLM (GPT-4o) - accurate, requires API key",
         ]
     } else {
         vec![
             "Native (template matching) - fast, requires templates/",
-            "LLM (GPT-4o Mini) - OPENAI_API_KEY not set",
+            "LLM (GPT-4o) - OPENAI_API_KEY not set",
         ]
     };
 
@@ -277,4 +330,60 @@ fn select_trigger_mode_interactive() -> Result<bool> {
         .context("Failed to get user selection")?;
 
     Ok(selection == 1) // 1 = Manual
+}
+
+/// Interactive CLI selector for player side
+fn select_player_side_interactive() -> Result<PlayerSide> {
+    let options = vec![
+        "White (your pieces at bottom of screen)",
+        "Black (your pieces at bottom of screen)",
+    ];
+
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Which side are you playing?")
+        .items(&options)
+        .default(0) // White is default
+        .interact()
+        .context("Failed to get user selection")?;
+
+    Ok(match selection {
+        1 => PlayerSide::Black,
+        _ => PlayerSide::White,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_player_side_fen_turn_white() {
+        assert_eq!(PlayerSide::White.fen_turn(), 'w');
+    }
+
+    #[test]
+    fn test_player_side_fen_turn_black() {
+        assert_eq!(PlayerSide::Black.fen_turn(), 'b');
+    }
+
+    #[test]
+    fn test_player_side_needs_flip_white() {
+        assert!(!PlayerSide::White.needs_board_flip());
+    }
+
+    #[test]
+    fn test_player_side_needs_flip_black() {
+        assert!(PlayerSide::Black.needs_board_flip());
+    }
+
+    #[test]
+    fn test_player_side_default() {
+        assert_eq!(PlayerSide::default(), PlayerSide::White);
+    }
+
+    #[test]
+    fn test_player_side_display() {
+        assert_eq!(format!("{}", PlayerSide::White), "White");
+        assert_eq!(format!("{}", PlayerSide::Black), "Black");
+    }
 }

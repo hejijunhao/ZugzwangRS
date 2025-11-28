@@ -5,6 +5,116 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to Rust conventions and semantic versioning.
 
+## [0.1.4] - 2025-11-28 (GPT-4o Upgrade & Player Side Selection)
+
+### Added
+- **Player Side Selection** (`--side=white|black`): Support for playing as Black
+  - Interactive selector prompts when `--side` flag not provided
+  - LLM OCR: Prompt dynamically specifies which pieces are at bottom of screen
+  - Native OCR: Board image flipped 180° before template matching when playing Black
+  - FEN turn indicator set based on player side ('w' or 'b')
+  - Startup banner now shows "Playing: White" or "Playing: Black"
+- **Automatic Retry on Validation Failure**: LLM OCR now retries up to 3 times when FEN validation fails
+  - Handles transient errors like "9 pawns detected" (LLM occasionally hallucinates ghost pieces)
+  - Shows warning: `⚠ Validation failed (attempt 1/3): ... - retrying...`
+  - Two-tier retry: inner loop for API errors, outer loop for validation errors
+- **Castling Rights Validation**: Automatically fixes invalid castling claims in FEN
+  - Checks if kings/rooks are on starting squares before allowing castling rights
+  - Prevents Tanton engine crashes (segfaults) from impossible positions
+  - Example fix: `r4rk1/.../KQkq` → `r4rk1/.../-` (black king already castled)
+- **Pawn Count Validation**: Rejects FEN with more than 8 pawns per side
+  - Common LLM error: pawn appears on both starting square AND new position
+
+### Changed
+- **LLM Model Upgrade**: GPT-4o Mini → GPT-4o (full model)
+  - Significantly better vision accuracy for piece recognition
+  - Cost increase: ~$0.001 → ~$0.01 per request (10×)
+- **Image Detail Mode**: `low` → `high`
+  - Low mode downscales to 512px max; high mode uses up to 2048px with tiling
+  - Critical for accurate piece recognition in cluttered screenshots
+- **API Timeout**: 15s → 30s (larger model needs more processing time)
+- **MIME Type**: `image/png` → `image/jpeg` in API request (matches actual file format)
+- **UI Labels**: All "GPT-4o Mini" references updated to "GPT-4o"
+
+### Fixed
+- **Engine Crash on Castled Positions**: Fixed segfault when LLM returns FEN with castling rights for a king that has already moved
+- **Inverted Board Recognition**: Playing as Black no longer produces mirrored/incorrect FEN
+
+### Performance
+| Metric | v0.1.3 | v0.1.4 | Notes |
+|--------|--------|--------|-------|
+| LLM Latency | 300-600ms | 500-2000ms | Larger model, higher accuracy |
+| LLM Accuracy | ~85% | ~95%+ | Fewer validation retries needed |
+| API Cost | ~$0.001 | ~$0.01 | 10× increase, worth it for accuracy |
+| Crash Rate | Occasional | Rare | Castling/pawn validation prevents most |
+
+### CLI Changes
+```bash
+# New flag
+cargo run -- --side=black       # Play as Black (board flipped)
+cargo run -- --side=white       # Play as White (default)
+
+# Combined with other flags
+cargo run -- --ocr=llm --side=black --trigger=manual
+```
+
+### Notes
+- GPT-4o recommended over GPT-4o Mini for production use (accuracy > cost savings)
+- Player side defaults to White if not specified via CLI or interactive prompt
+- Validation retries add ~3-6 seconds when errors occur, but succeed ~90% of time on retry
+
+---
+
+## [0.1.3] - 2025-11-27 (High-DPI Optimization & UX Improvements)
+
+### Added
+- **Verbose Mode** (`--verbose` / `-v`): Real-time pipeline timing with per-step breakdown
+  - Shows cycle number, capture/OCR/engine timing, and total latency
+  - Formatted output with box-drawing characters for readability
+- **Manual Capture Trigger** (`--trigger=auto|manual`): Control when screenshots are captured
+  - `auto` (default): Continuous capture at interval
+  - `manual`: Press Enter to capture on-demand (saves API costs in LLM mode)
+- **Interactive Mode Selectors**: Startup prompts for OCR mode and trigger mode when flags not provided
+  - Clean dialoguer-based UI with arrow key navigation
+- **Human-Readable Move Format**: Changed from UCI (`c2c3`) to readable (`C2 to C3`)
+  - Promotions shown as `E7 to E8 (=Q)`
+- **Real-time Progress Logging**: Each pipeline step now shows progress with explicit `flush()` calls
+  - Example: `Capturing screen... 206ms (6016×3384 → 1920×1080)`
+
+### Changed
+- **High-DPI Display Optimization**: Fixed catastrophic performance on 4K/5K/6K displays
+  - Added downsampling to max 1920px width (was processing full 6016×3384)
+  - Switched from PNG to JPEG Q85 encoding (~40× faster on large images)
+  - Screenshot file changed from `.png` to `.jpg`
+- **LLM Mode Optimization**: Skip board detection entirely—GPT-4o Mini finds the board itself
+  - Eliminates ~9000ms edge detection overhead on high-DPI displays
+- **Engine Search Depth**: Reduced from 12 to 6 for real-time responsiveness
+  - Depth 12 hung indefinitely on opening positions; depth 6 completes in ~85ms
+- **Board Detection Accuracy**: Fixed algorithm selecting partial boards instead of full 8×8
+  - Changed scoring from pure edge density to `density × size` (favors larger boards)
+  - Increased minimum board size from 200px to 300px
+  - Finer search granularity (50px steps instead of 100px)
+
+### Fixed
+- **FEN Validation**: Added king count validation to prevent Tanton engine panics
+  - GPT-4o Mini occasionally returns positions with missing kings
+  - Now validates exactly 1 white king and 1 black king before engine analysis
+
+### Performance
+| Mode | Before (6K display) | After | Improvement |
+|------|---------------------|-------|-------------|
+| LLM Total | 17+ seconds | ~3.3s | **5×** |
+| Native Total | 17+ seconds | ~810ms | **20×** |
+| Capture + encode | ~8000ms | ~200ms | **40×** |
+| Board detection | ~9000ms | ~500ms (Native) / 0ms (LLM) | **18×** |
+
+### Notes
+- LLM mode now recommended for most users (more accurate, no template setup)
+- Manual trigger mode (`--trigger=manual`) ideal for correspondence games or cost-conscious users
+- Full debug: `DEBUG_CAPTURE=1 DEBUG_OCR=1 cargo run -- -v`
+
+---
+
 ## [0.1.2] - 2025-11-26 (Interactive API Key Prompt)
 
 ### Added

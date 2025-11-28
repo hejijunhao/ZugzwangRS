@@ -1,7 +1,7 @@
 //! OCR facade module - dispatches to LLM or native implementation based on mode
 //!
 //! This module provides a unified interface for board-to-FEN conversion:
-//! - **LLM mode**: Sends full screenshot to GPT-4o Mini (it finds the board itself)
+//! - **LLM mode**: Sends full screenshot to GPT-4o (it finds the board itself)
 //! - **Native mode**: Detects/crops board first, then uses template matching
 //!
 //! The modes differ in board detection:
@@ -9,6 +9,7 @@
 //! - Native requires board detection for accurate template matching
 
 use anyhow::{Context, Result};
+use crate::PlayerSide;
 
 /// Path where the cropped board image is saved for OCR processing
 const CROPPED_BOARD_PATH: &str = "screenshots/cropped_board.png";
@@ -16,7 +17,7 @@ const CROPPED_BOARD_PATH: &str = "screenshots/cropped_board.png";
 /// OCR implementation mode
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OcrMode {
-    /// GPT-4o Mini vision API
+    /// GPT-4o vision API (high accuracy)
     Llm,
     /// Template-based matching (default for backward compatibility)
     #[default]
@@ -26,7 +27,7 @@ pub enum OcrMode {
 impl std::fmt::Display for OcrMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            OcrMode::Llm => write!(f, "LLM (GPT-4o Mini)"),
+            OcrMode::Llm => write!(f, "LLM (GPT-4o)"),
             OcrMode::Native => write!(f, "Native (template matching)"),
         }
     }
@@ -41,18 +42,22 @@ pub fn llm_available() -> bool {
 ///
 /// For Native mode: Detects and crops the chessboard, then uses template matching.
 /// For LLM mode: Sends the full screenshot directly to GPT-4o Mini (it can find the board itself).
-pub async fn board_to_fen(image_path: &str, site: &str, mode: OcrMode) -> Result<String> {
+///
+/// The `player_side` parameter determines:
+/// - Board orientation interpretation (Black = board flipped 180°)
+/// - FEN turn indicator ('w' for White, 'b' for Black)
+pub async fn board_to_fen(image_path: &str, site: &str, mode: OcrMode, player_side: PlayerSide) -> Result<String> {
     use std::io::Write;
     use std::time::Instant;
 
     match mode {
         OcrMode::Llm => {
-            // LLM mode: Skip board detection - GPT-4o Mini can find the board in the full image
+            // LLM mode: Skip board detection - GPT-4o can find the board in the full image
             // This saves 5-10 seconds of CPU-intensive edge detection
             eprint!("LLM OCR... ");
             let _ = std::io::stderr().flush();
             let ocr_start = Instant::now();
-            let result = crate::ocr_llm::board_to_fen(image_path).await;
+            let result = crate::ocr_llm::board_to_fen(image_path, player_side).await;
             eprintln!("{:.0}ms", ocr_start.elapsed().as_secs_f64() * 1000.0);
             result
         }
@@ -85,7 +90,7 @@ pub async fn board_to_fen(image_path: &str, site: &str, mode: OcrMode) -> Result
             let ocr_start = Instant::now();
             let site = site.to_string();
             let result = tokio::task::spawn_blocking(move || {
-                crate::ocr_native::cropped_board_to_fen(&cropped_path, &site)
+                crate::ocr_native::cropped_board_to_fen(&cropped_path, &site, player_side)
             })
             .await
             .map_err(|e| anyhow::anyhow!("Native OCR task failed: {}", e))?;
@@ -102,7 +107,7 @@ mod tests {
 
     #[test]
     fn test_ocr_mode_display() {
-        assert_eq!(format!("{}", OcrMode::Llm), "LLM (GPT-4o Mini)");
+        assert_eq!(format!("{}", OcrMode::Llm), "LLM (GPT-4o)");
         assert_eq!(format!("{}", OcrMode::Native), "Native (template matching)");
     }
 

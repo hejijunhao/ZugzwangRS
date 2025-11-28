@@ -11,6 +11,7 @@ use image::{DynamicImage, GenericImageView, GrayImage, imageops, ImageReader, Rg
 use imageproc::edges::canny;
 use imageproc::template_matching::{match_template, MatchTemplateMethod};
 use std::collections::HashMap;
+use crate::PlayerSide;
 
 /// Detects the chessboard in the full screenshot and crops/resizes it to a standard board image.
 /// Uses imageproc for auto-detection via edge analysis.
@@ -271,8 +272,9 @@ fn match_square(square: &GrayImage, templates: &PieceTemplates) -> char {
 
 /// Builds FEN string from 8x8 grid of piece characters
 /// Takes matched pieces where '1' = empty, 'K'/'k' = king, etc.
+/// The `player_side` determines the turn indicator in the FEN.
 /// Returns validated FEN string with game state appended
-fn build_fen_string(board: [[char; 8]; 8]) -> Result<String> {
+fn build_fen_string(board: [[char; 8]; 8], player_side: PlayerSide) -> Result<String> {
     let mut fen_parts: Vec<String> = Vec::with_capacity(8);
 
     for row in &board {
@@ -301,10 +303,11 @@ fn build_fen_string(board: [[char; 8]; 8]) -> Result<String> {
     }
 
     // Join ranks with '/' and append game state
-    // Note: We assume white to move, full castling rights for MVP
-    // (proper turn detection would require move history or time analysis)
+    // Turn is determined by player_side (assumes it's the player's turn to move)
+    // Full castling rights assumed for simplicity (proper tracking would require move history)
     let piece_placement = fen_parts.join("/");
-    let full_fen = format!("{} w KQkq - 0 1", piece_placement);
+    let turn = player_side.fen_turn();
+    let full_fen = format!("{} {} KQkq - 0 1", piece_placement, turn);
 
     // Validate FEN with shakmaty
     shakmaty::fen::Fen::from_ascii(full_fen.as_bytes())
@@ -318,19 +321,23 @@ fn build_fen_string(board: [[char; 8]; 8]) -> Result<String> {
 /// Note: The OCR facade typically calls cropped_board_to_fen directly after
 /// shared board detection. This function is kept for direct usage/testing.
 #[allow(dead_code)]
-pub fn board_to_fen(image_path: &str, site: &str) -> Result<String> {
+pub fn board_to_fen(image_path: &str, site: &str, player_side: PlayerSide) -> Result<String> {
     // Detect and crop board from screenshot
     let board_img = screenshot_to_board(image_path)
         .context("Failed to detect/crop board from screenshot")?;
 
     // Delegate to the cropped board processor
-    process_board_image(board_img, site)
+    process_board_image(board_img, site, player_side)
 }
 
 /// Processes a pre-cropped board image to generate FEN string.
 /// Called by the OCR facade after shared board detection.
 /// Expects a 512x512 board image (or will resize to that).
-pub fn cropped_board_to_fen(image_path: &str, site: &str) -> Result<String> {
+///
+/// The `player_side` parameter determines:
+/// - Board orientation: If Black, the board is flipped 180° before processing
+/// - FEN turn indicator: 'w' for White, 'b' for Black
+pub fn cropped_board_to_fen(image_path: &str, site: &str, player_side: PlayerSide) -> Result<String> {
     use image::ImageReader;
 
     let img = ImageReader::open(image_path)
@@ -347,14 +354,26 @@ pub fn cropped_board_to_fen(image_path: &str, site: &str) -> Result<String> {
         img
     };
 
-    process_board_image(board_img, site)
+    process_board_image(board_img, site, player_side)
 }
 
 /// Internal: processes a board image (already cropped/resized) to FEN.
 /// Shared by both board_to_fen and cropped_board_to_fen.
-fn process_board_image(board_img: DynamicImage, site: &str) -> Result<String> {
+///
+/// When playing as Black, the board appears with Black pieces at the bottom.
+/// We flip the image 180° so that the standard FEN interpretation (rank 8 at top) is correct.
+fn process_board_image(board_img: DynamicImage, site: &str, player_side: PlayerSide) -> Result<String> {
     // Convert to RGBA for processing
-    let img = board_img.to_rgba8();
+    let mut img = board_img.to_rgba8();
+
+    // If playing as Black, the board is shown with Black at bottom
+    // Flip 180° so FEN interpretation (rank 8 at top) remains correct
+    if player_side.needs_board_flip() {
+        img = imageops::rotate180(&img);
+        if std::env::var("DEBUG_OCR").is_ok() {
+            eprintln!("Board flipped 180° for Black perspective");
+        }
+    }
 
     // Load templates
     let templates = load_templates(site).context("Failed to load piece templates")?;
@@ -381,5 +400,5 @@ fn process_board_image(board_img: DynamicImage, site: &str) -> Result<String> {
         }
     }
 
-    build_fen_string(board)
+    build_fen_string(board, player_side)
 }
