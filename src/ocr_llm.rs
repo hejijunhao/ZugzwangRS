@@ -177,31 +177,47 @@ pub async fn board_to_fen(image_path: &str, player_side: PlayerSide) -> Result<S
 /// Builds the prompt for direct move analysis.
 /// The LLM will analyze the position and recommend the best move.
 fn build_move_prompt(player_side: PlayerSide) -> String {
-    let (color, piece_position) = match player_side {
-        PlayerSide::White => ("White", "Your pieces (White) are at the bottom of the image"),
-        PlayerSide::Black => ("Black", "Your pieces (Black) are at the bottom of the image"),
+    let (color, opponent_color, my_pieces_location, opponent_pieces_location) = match player_side {
+        PlayerSide::White => ("White", "Black", "bottom", "top"),
+        PlayerSide::Black => ("Black", "White", "bottom", "top"),
     };
 
-    format!(r#"You are a chess grandmaster analyzing this board position. You are playing as {color}.
+    format!(r#"This is a screenshot of a chess game. Find the chess board in the image and analyze the position.
 
-{piece_position}.
+CRITICAL CONTEXT:
+- You are playing as {color}
+- It is {color}'s turn to move
+- {color} pieces are at the {my_pieces_location} of the board
+- {opponent_color} pieces are at the {opponent_pieces_location} of the board
+- The board uses standard orientation (a-file on left, h-file on right from {color}'s perspective)
+- Rank 1 is at {color}'s side, Rank 8 is at {opponent_color}'s side
 
-Analyze the position and recommend the best move. Consider:
-- Tactical opportunities (captures, checks, threats)
+TASK: Recommend the best move for {color}.
+
+Consider:
+- Tactical opportunities (captures, checks, forks, pins, skewers)
 - Positional factors (piece activity, pawn structure, king safety)
-- Strategic plans
+- Immediate threats from {opponent_color}
 
-Respond in EXACTLY this format (3 lines, no extra text):
-MOVE: [your move in format like "E2 to E4" or "Knight F3 to G5" or "Castle kingside"]
+Respond in EXACTLY this format (3 lines only, no other text):
+MOVE: [source square] to [destination square]
 EVAL: [one of: winning, clear advantage, slight advantage, equal, slight disadvantage, clear disadvantage, losing]
-WHY: [one brief sentence explaining the move]
+WHY: [one brief sentence explaining why this is the best move]
+
+IMPORTANT:
+- Use algebraic notation for squares (e.g., E2 to E4, not "pawn forward")
+- The source and destination squares MUST be different
+- Only suggest legal chess moves
+- For castling: "O-O" (kingside) or "O-O-O" (queenside)
 
 Example response:
 MOVE: E2 to E4
 EVAL: equal
 WHY: Controls the center and opens lines for the bishop and queen."#,
         color = color,
-        piece_position = piece_position
+        opponent_color = opponent_color,
+        my_pieces_location = my_pieces_location,
+        opponent_pieces_location = opponent_pieces_location
     )
 }
 
@@ -494,17 +510,22 @@ mod tests {
     fn test_build_move_prompt_for_white() {
         let prompt = build_move_prompt(PlayerSide::White);
         assert!(prompt.contains("playing as White"));
-        assert!(prompt.contains("Your pieces (White) are at the bottom"));
+        assert!(prompt.contains("White pieces are at the bottom"));
+        assert!(prompt.contains("Black pieces are at the top"));
+        assert!(prompt.contains("It is White's turn"));
         assert!(prompt.contains("MOVE:"));
         assert!(prompt.contains("EVAL:"));
         assert!(prompt.contains("WHY:"));
+        assert!(prompt.contains("MUST be different")); // Prevents "B4 to B4" errors
     }
 
     #[test]
     fn test_build_move_prompt_for_black() {
         let prompt = build_move_prompt(PlayerSide::Black);
         assert!(prompt.contains("playing as Black"));
-        assert!(prompt.contains("Your pieces (Black) are at the bottom"));
+        assert!(prompt.contains("Black pieces are at the bottom"));
+        assert!(prompt.contains("White pieces are at the top"));
+        assert!(prompt.contains("It is Black's turn"));
     }
 
     // ===== Move Response Parsing Tests =====
